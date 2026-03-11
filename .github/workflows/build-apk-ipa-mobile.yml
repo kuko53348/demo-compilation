@@ -1,0 +1,88 @@
+name: APK Build - Protected Code (ARM64)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  BUILD_NUMBER: 1
+  BUILD_VERSION: 1.0.0
+  PYTHON_VERSION: 3.11.0
+  FLET_CLI_VERSION: 0.28.3
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Setup Android NDK
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r25c
+
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install flet-cli==${{ env.FLET_CLI_VERSION }}
+        pip install cython
+
+    - name: 🔒 Compile for ARM64
+      run: |
+        # Configurar NDK
+        export ANDROID_NDK=$ANDROID_HOME/ndk/25.2.9519653
+        export PATH=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+        
+        echo "🔒 Iniciando compilación para ARM64..."
+
+        # Backup main.py
+        cp src/main.py src/main.py.backup
+
+        # Compilar cada archivo .py a .so para ARM64
+        find src -name "*.py" ! -name "main.py" | while read pyfile; do
+            module=$(basename "${pyfile%.py}")
+            echo "Compilando: $module"
+            
+            # Generar C
+            cython -3 --embed "$pyfile" -o "${pyfile%.py}.c"
+            
+            # Compilar a .so para ARM64
+            aarch64-linux-android21-clang -shared -pthread \
+                -I$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include \
+                -I/usr/include/python3.11 \
+                -L/usr/lib/python3.11/config-3.11-x86_64-linux-gnu \
+                "${pyfile%.py}.c" \
+                -o "src/lib${module}.so" \
+                -lpython3.11 -lm -ldl -lutil || true
+        done
+
+        # Eliminar archivos .py
+        find src -name "*.py" ! -name "main.py.backup" -delete
+        find src -name "*.c" -delete
+
+        # Restaurar main.py
+        mv src/main.py.backup src/main.py
+
+        # Crear __init__.py
+        find src -type d -exec touch {}/__init__.py \;
+
+    - name: 📦 Build APK
+      run: |
+        flet build apk \
+          --build-number=${{ env.BUILD_NUMBER }} \
+          --build-version=${{ env.BUILD_VERSION }}
+
+    - name: 📤 Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: CodeHex-Protected-ARM64
+        path: build/apk/*.apk
